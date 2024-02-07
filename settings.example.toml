@@ -1,0 +1,29 @@
+[Tasks]
+SleepDuration = 60
+MaintenanceHz = 86400
+SchedulingHz = 300
+AutoBackupsHz = 900
+
+[Database]
+Usr = ""
+Pwd = ""
+DB = "AutoBk"
+Host = ""
+
+[Paths]
+LogFile = "/var/log/autobk-r/autobk-r.log"
+BackupDir = "/var/autobk-r/backups"
+
+[Extensions]
+APEX = "csv"
+DCM = "tgz"
+CAP = "zip"
+Vista = "txt"
+Inca1 = "bak"
+OneNet = "zip"
+OneNetLog = "txt"
+TC600E = "xml"
+CXCHP = "Backup"
+PSSend = "json"
+Quartet = "xcfg"
+FakeDevice = "txt"
