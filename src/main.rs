@@ -8,7 +8,7 @@ mod op_autobackups;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{thread, time};
 use std::collections::HashMap;
-use signal_hook::{consts::signal::SIGTERM, iterator::Signals};
+use signal_hook::{consts::signal::{SIGINT, SIGTERM}, iterator::Signals};
 use config::Config as SettingsConfig;
 
 
@@ -63,12 +63,14 @@ fn main() {
 
     log::info!("Service is running");
 
-    let mut signals = Signals::new(&[SIGTERM]).unwrap();
+    let mut signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
     let signals_handle = signals.handle();
     let signals_thread = std::thread::spawn(move || {
         for sig in signals.forever() {
-            if sig == SIGTERM {
+            if sig == SIGTERM || sig == SIGINT {
                 RUNNING.store(false, Ordering::SeqCst);
+                println!("Service is stopping due to signal {}", sig);
+                log::info!("Service is stopping due to signal {}", sig);
                 break;
             }
         }
@@ -100,5 +102,5 @@ fn main() {
     signals_handle.close();
     signals_thread.join().unwrap();
 
-    log::info!("Service is stopping");
+    log::info!("Service is stopped");
 }

@@ -2,7 +2,7 @@ use mysql::*;
 use mysql::prelude::*;
 use std::fs;
 use log::{info, error};
-use std::path::Path;
+use std::path::{ Path, PathBuf };
 use crate::BaseConfig;
 
 pub fn run_maintenance(config: &BaseConfig) {
@@ -55,13 +55,26 @@ pub fn run_maintenance(config: &BaseConfig) {
 
     // Delete expired backups
     for (k_self, k_device, s_file, _) in expired_backups {
+        let file = s_file.clone();
         // Delete backup file
-        let backup_path = format!("{}/{}/{}", config.backup_directory, k_device, s_file);
-        if Path::new(&backup_path).exists() {
-            if let Err(e) = fs::remove_file(&backup_path) {
+        let backup_location = s_file.clone();
+        if Path::new(&backup_location).exists() {
+            log::info!("Deleting expired backup: {}", file);
+            if let Err(e) = fs::remove_file(file) {
                 error!("Failed to delete backup file: {}", e);
                 continue;
             }
+        } else {
+            log::error!("Backup file not found: {}", file);
+        }
+
+        // Delete corresponding row from BackupVersion table
+        let s_sql_del_backup_version = "DELETE FROM BackupVersion WHERE kBackup = :k_self";
+        if let Err(e) = conn.exec_drop(s_sql_del_backup_version, params! {
+            "k_self" => k_self
+        }) {
+            error!("Failed to delete backup version from database: {}", e);
+            continue;
         }
 
         // Delete backup from database
@@ -71,7 +84,7 @@ pub fn run_maintenance(config: &BaseConfig) {
             error!("Failed to delete backup from database: {}", e);
             continue;
         }
-        log::info!("Deleted expired backup: {}", k_self);
+        log::info!("Deleted expired backup: {}", backup_location);
     }
     log::info!("Maintenance tasks completed");
 }
