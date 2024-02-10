@@ -8,6 +8,7 @@ mod op_autobackups;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{thread, time};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use signal_hook::{consts::signal::{SIGINT, SIGTERM}, iterator::Signals};
 use config::Config as SettingsConfig;
 
@@ -20,6 +21,7 @@ pub struct BaseConfig {
     pub db_host: String,
     pub backup_directory: String,
     pub file_extensions: HashMap<String, String>,
+    pub python_scripts: String,
 }
 
 fn main() {
@@ -49,6 +51,7 @@ fn main() {
     let db_name = settings.get::<String>("Database.DB").expect("Database name not set in config");
     let db_host = settings.get::<String>("Database.Host").expect("Database host not set in config");
     let backup_directory = settings.get::<String>("Paths.BackupDir").expect("Backup directory not set in config");
+    let python_scripts = settings.get::<String>("Paths.PythonScripts").expect("Python scripts directory not set in config");
 
     std::fs::create_dir_all(&backup_directory).expect("Failed to create backup directory");
 
@@ -58,7 +61,8 @@ fn main() {
         db_name,
         db_host,
         backup_directory,
-        file_extensions,        
+        file_extensions,
+        python_scripts,        
     };
 
     log::info!("Service is running");

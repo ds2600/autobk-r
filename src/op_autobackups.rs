@@ -4,14 +4,54 @@ use log::{info, error};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::process::Command;
 use crate::BaseConfig;
 use crate::device_types::{get_device, Device};
+use chrono::Local;
 
 fn calculate_md5(file_path: &PathBuf) -> String {
     let mut file = File::open(file_path).expect("Unable to open file");
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).expect("Unable to read file");
     format!("{:x}", md5::compute(buffer))
+}
+
+fn call_python_script(script_path: &str, args: &[&str]) -> Result<String, String> {
+    log::info!("Calling Python module: {}", script_path);
+    let output = Command::new("python3.8")
+        .arg(script_path)
+        .args(args)
+        .output()
+        .expect("Failed to execute Python script");
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+// Database Operations
+fn insert_backup(conn: &mut PooledConn, device_id: u32, backup_file_path: &PathBuf, backup_hash: &str) -> Result<u64, mysql::Error> {
+    conn.exec_drop(
+        "INSERT INTO Backup (kDevice, tComplete, sFile, backupHash) VALUES (?, NOW(), ?, ?)",
+        (device_id, backup_file_path.to_str().expect("Failed to convert path to string"), backup_hash)
+    )?;
+    Ok(conn.last_insert_id())
+}
+
+fn insert_backup_version(conn: &mut PooledConn, k_backup: u64, device_id: u32, version: f64) -> Result<(), mysql::Error> {
+    conn.exec_drop(
+        "INSERT INTO BackupVersion (kBackup, kDevice, versionNumber) VALUES (?, ?, ?)",
+        (k_backup, device_id, version)
+    )
+}
+
+fn update_schedule(conn: &mut PooledConn, schedule_id: &str, state: &str, comment: &str) -> Result<(), mysql::Error> {
+    conn.exec_drop(
+        "UPDATE Schedule SET sState = ?, sComment = ? WHERE kSelf = ?",
+        (state, comment, schedule_id)
+    )
 }
 
 pub fn run_autobackups(config: &BaseConfig) {
@@ -61,20 +101,28 @@ pub fn run_autobackups(config: &BaseConfig) {
         }).unwrap();
 
     for (device_id, device_name, device_ip, device_type, auto_weeks, schedule_id, state, attempt, comment) in devices {
-        if let Some(device) = get_device(&device_type) {
-            let extension = match config.file_extensions.get(&device_type.to_lowercase()) {
-                Some(extension) => extension,
-                None => {
-                    log::error!("No file extension for device type: {}", device_type);
-                    return; 
-                }
-            };
+        let extension = match config.file_extensions.get(&device_type.to_lowercase()) {
+            Some(extension) => extension,
+            None => {
+                log::error!("No file extension for device type: {}", device_type);
+                return; 
+            }
+        };
 
-            
-            let device_id_str = format!("{:0>10}/", device_id);
-            let backup_path = PathBuf::from(format!("{}/{}", &config.backup_directory, device_id_str));
-            std::fs::create_dir_all(&backup_path).expect("Failed to create backup directory");
-            let backup_result = device.backup(&device_id, &device_name, &device_ip, &backup_path, extension);
+        let device_id_str = format!("{:0>10}/", device_id);
+        let backup_path = PathBuf::from(format!("{}/{}", &config.backup_directory, device_id_str));
+        std::fs::create_dir_all(&backup_path).expect("Failed to create backup directory");
+
+        let dt_now = Local::now();
+        let formatted_dt = dt_now.format("%Y-%m-%d_%H-%M-%S");
+
+        let filename = format!("{}_{}.{}", device_name, formatted_dt, extension);
+        let filename = filename.to_lowercase().replace(" ", "_");
+        let backup_file = backup_path.join(filename);
+
+        if let Some(device) = get_device(&device_type) {
+
+            let backup_result = device.backup(&device_name, backup_file);
 
             match backup_result {
                 Ok(backup_file_path) => {
@@ -109,28 +157,15 @@ pub fn run_autobackups(config: &BaseConfig) {
                         // Hashes don't match or no previous backup, save the file and update the database
                         log::info!("Detected changes on {}, storing backup and updating version", device_name);
                         // Insert new backup record
-                        conn.exec_drop(
-                            "INSERT INTO Backup (kDevice, tComplete, sFile, backupHash) VALUES (?, NOW(), ?, ?)",
-                            (device_id, backup_file_path.to_str().expect("Failed to convert path to string"), &backup_hash_for_db)
-                        ).expect("Failed to insert into Backup");
-            
-                        // Get the last insert ID (kBackup)
-                        let k_backup: u64 = conn.last_insert_id();
+                        let k_backup = insert_backup(&mut conn, device_id, &backup_file, &backup_hash)?;
             
                         // Insert new backup version
-                        let changed_version = latest_version + 1.0;
-                        conn.exec_drop(
-                            "INSERT INTO BackupVersion (kBackup, kDevice, versionNumber) VALUES (?, ?, ?)",
-                            (k_backup, device_id, changed_version)
-                        ).expect("Failed to insert into BackupVersion");
-                        log::info!("Latest version for {} is now: {}", device_name, changed_version);
+                        insert_backup_version(&mut conn, k_backup, device_id, latest_version + 1.0)?;
+
+                        log::info!("Latest version for {} is now: {}", device_name, latest_version + 1.0);
                         
                         // Update Schedule status to 'Complete'
-                        let changed_comment = format!("Changes detected, new version: {}", changed_version);
-                        conn.exec_drop(
-                            "UPDATE Schedule SET sState = 'Complete', sComment = ? WHERE kSelf = ?",
-                            (&changed_comment, schedule_id)
-                        ).expect("Failed to update Schedule");
+                        update_schedule(&mut conn, &schedule_id, "Complete", "Changes detected, new version")?;
 
                         log::info!("Backup for {} completed", device_name);
                     }
@@ -145,7 +180,19 @@ pub fn run_autobackups(config: &BaseConfig) {
                 },
             }            
         } else {
-            error!("Unknown device type for {}: {}", device_name, device_type);
+            log::info!("Device type not found, looking for Python script: {}", device_type);
+            // Fallback to Python script
+            let script_path = format!("{}/op_autobk_backup_{}.py", &config.python_scripts, device_type);
+            let backup_file_str = backup_file.to_str().expect("Failed to convert path to string");
+            let args = vec![&device_ip, backup_file_str];
+            match call_python_script(&script_path, &args) {
+                Ok(output) => {
+                    log::info!("Python script output: {}", output);
+                },
+                Err(e) => {
+                    log::error!("Python script failed: {}", e);
+                },
+            }
         }
     }
 

@@ -1,18 +1,19 @@
-[Tasks]
-SleepDuration = 60
-MaintenanceHz = 86400
-SchedulingHz = 300
-AutoBackupsHz = 900
-
 [Database]
 Usr = ""
 Pwd = ""
-DB = "AutoBk"
+DB = ""
 Host = ""
 
 [Paths]
-LogFile = "/var/log/autobk-r/autobk-r.log"
-BackupDir = "/var/autobk-r/backups"
+LogFile = "/var/log/autobk/autobk-r.log"
+BackupDir = "/var/autobk/backups"
+ScriptDir = "/var/autobk/python"
+
+[Tasks]
+SleepDuration = 5
+MaintenanceHz = 15
+SchedulingHz = 50
+AutoBackupsHz = 45
 
 [Extensions]
 APEX = "csv"
